@@ -1,0 +1,567 @@
+#' @title pts: Power / Trend / Seasonal state-space model
+#'
+#' @description Estimates a PTS (Power / Trend / Seasonal) state-space model
+#' for a univariate time series.  This is the user-facing entry point of the
+#' \pkg{muse} package and mirrors the calling convention used elsewhere in
+#' the \pkg{smooth} family: \code{pts()} estimates the model, and
+#' \code{\link{forecast.pts}} produces forecasts from the fitted object
+#' without re-estimating.
+#'
+#' @param data response series.  Either a univariate \code{ts} / \code{zoo} /
+#' numeric vector, OR a matrix / \code{data.frame} whose first column is the
+#' response and whose remaining columns are external regressors (xregs).
+#' @param model 3-letter PTS specification string.  The three positions
+#' encode Power / Trend / Seasonal:
+#' \itemize{
+#'   \item Power: \code{Z} to estimate Box-Cox \eqn{\lambda}, or a numeric
+#'     value (e.g. \code{"0"}, \code{"0.5"}, \code{"1"}).
+#'   \item Trend: \code{Z} (auto), \code{N} (none / random walk),
+#'     \code{L} (local linear), \code{D} (damped / smooth random walk),
+#'     \code{G} (global / deterministic).
+#'   \item Seasonal: \code{Z} (auto), \code{N} (none), \code{D} (discrete /
+#'     linear), \code{T} (trigonometric / equal).
+#' }
+#' @param lags seasonal period (default \code{frequency(data)}).  Scalar for
+#' the structural seasonal; may also be a vector \code{c(1, s)} mirroring
+#' \code{smooth::adam}'s convention -- the last entry is the structural
+#' period, the full vector becomes the default lag set for the irregular's
+#' ARMA blocks (overridable per-fit via \code{orders$lags}).
+#' @param orders ARMA / SARMA spec for the irregular component.  Three forms:
+#' \itemize{
+#'   \item Full list \code{list(ar, ma, select)} for a non-seasonal
+#'     \eqn{ARMA(p, q)} -- \code{ar}, \code{ma} non-negative scalars (default
+#'     0); \code{select = TRUE} asks the engine to search ARMA orders up to
+#'     that cap.
+#'   \item Numeric shortcut \code{c(p, q)} -- equivalent to
+#'     \code{list(ar = p, ma = q, select = FALSE)}; \code{c(p)} is treated
+#'     as \code{c(p, 0)}.
+#'   \item Seasonal \code{list(ar = c(p, P), ma = c(q, Q), lags = c(1, s))}
+#'     for \eqn{SARMA(p, q)(P, Q)_s} -- \code{ar} / \code{ma} are length-L
+#'     vectors paired position-wise with \code{lags}, with \code{lags[1] =
+#'     1} (non-seasonal block) and \code{lags[2] = s} (seasonal block).
+#'     If \code{orders$lags} is omitted the default falls back to the
+#'     top-level \code{lags} argument (or \code{c(1, frequency(data))}).
+#'     The seasonal SARMA polynomial is multiplied internally, so the BFGS
+#'     only optimises the free \eqn{\phi_i, \Phi_j, \theta_i, \Theta_j}
+#'     coefficients.  \code{select = TRUE} runs a grid search over every
+#'     \eqn{(p', q', P', Q')} tuple with \eqn{0 \le p' \le} \code{ar[1]} and
+#'     so on, and picks the candidate with the lowest \code{ic}.
+#' }
+#' PTS has no differencing -- any \code{orders$i} supplied is silently
+#' ignored.
+#' @param formula optional formula \code{response ~ x1 + x2 + ...}; only
+#' meaningful when \code{data} is a matrix or \code{data.frame}.  Used to
+#' pick the response column + xreg columns explicitly.
+#' @param regressors handling of xregs.  Currently only \code{"use"}
+#' (apply all supplied xregs as fixed-coefficient covariates).  Adam's
+#' \code{"select"} and \code{"adapt"} modes are not yet implemented.
+#' @param outliers what to do about outliers, mirroring \code{adam()}'s
+#' interface: \code{"ignore"} (default -- fit ignores the possibility of
+#' outliers) or \code{"use"} (run the engine's outlier detector once
+#' after the structural fit, classify each event as AO / LS / SC, and
+#' refit with the detected events as fixed regressor dummies).  Adam's
+#' \code{"select"} mode (IC-pruning of detected dummies) is not yet
+#' supported -- passing it errors with a clear message.  When
+#' \code{outliers = "use"} the detected events are returned on the
+#' fitted object as \code{$outliersDetected} (a data frame with
+#' \code{time} and \code{type} columns) and the corresponding dummy
+#' coefficients appear in \code{coef(m)} as \code{Beta(...)} entries.
+#' @param level confidence level driving the outlier z-score threshold
+#' (default 0.99).  Translated to a two-sided z via
+#' \code{qnorm((1 + level) / 2)}: 0.99 -> ~= 2.576, 0.95 -> ~= 1.960.  The
+#' z drives the AO threshold; LS / SC scale proportionally to preserve
+#' the engine's relative stiffness (LS ~= 1.087*z, SC ~= 1.304*z).
+#' Ignored when \code{outliers = "ignore"}.
+#' @param ic information criterion for automatic model selection; one of
+#' \code{"AICc"} (default), \code{"BICc"}, \code{"BIC"}, \code{"AIC"}.
+#' Matches the adam option set; AICc is the default, as in \code{adam}.
+#' @param lambda_estim how the Box-Cox power \eqn{\lambda} is chosen when the
+#' power slot of \code{model} is \code{"Z"}; one of:
+#' \itemize{
+#'   \item \code{"likelihood"} (default) -- estimate \eqn{\lambda} jointly with
+#'     the structural parameters by maximum likelihood in the engine.
+#'   \item \code{"guerrero"} -- the classical Guerrero (1993) variance-
+#'     stabilisation screen on raw season-length blocks.
+#'   \item \code{"decomp-guerrero"} -- Guerrero on an \code{msdecompose}-smoothed
+#'     trend (the former default).
+#' }
+#' Ignored when a numeric power is supplied (e.g. \code{"0.5ZZ"}).
+#' @param biasadj logical (default \code{FALSE}).  Point forecasts are the
+#' back-transformed conditional \emph{median} \eqn{g^{-1}(\mu)}.  When
+#' \code{TRUE}, a second-order bias correction is applied so the point forecast
+#' approximates the conditional \emph{mean} (as in
+#' \code{forecast::InvBoxCox(biasadj = TRUE)}).  Prediction-interval quantiles
+#' are unaffected.  Has no effect at \eqn{\lambda = 1}.
+#' @param h forecast horizon. If \code{h > 0} a forecast is computed at fit
+#' time and cached on the object; \code{forecast(object, h)} can later
+#' recompute for a different horizon cheaply.
+#' @param holdout logical. If \code{TRUE} and \code{h > 0}, the last \code{h}
+#' observations of \code{data} are withheld from estimation and returned in
+#' \code{$holdout} for later accuracy assessment.
+#' @param verbose logical: print intermediate optimisation output.
+#' @param ... advanced / undocumented passthroughs.  Supported keys:
+#' \itemize{
+#'   \item \code{B} - numeric vector of starting values for the optimiser
+#'     (natural-scale variances, in the order returned in \code{$B} by a
+#'     default fit).  Mirrors the same hatch in \code{smooth::adam()}.
+#'     The optimised vector is returned in the \code{$B} slot of the
+#'     output regardless of whether the user supplied one.
+#' }
+#'
+#' @return An object of class \code{c("pts", "smooth")}.  Slot names mirror
+#' \code{smooth::adam()}'s return list where the concept is shared; pts-only
+#' extensions are flagged below.
+#' \itemize{
+#'   \item Inputs / spec: \code{y, model, modelUC*, lags, lambda*}
+#'   \item Parameters: \code{B} (estimated parameter vector), \code{covp*}
+#'     (parameter covariance), \code{nParam} -- an adam-style 2 x 5 matrix
+#'     (rows \code{Estimated} / \code{Provided}; columns
+#'     \code{nParamInternal}, \code{nParamXreg}, \code{nParamOccurrence},
+#'     \code{nParamScale}, \code{nParamAll}).  \code{nparam()} returns the
+#'     \code{[Estimated, nParamAll]} cell.  Estimated structural initials
+#'     (level/slope, cycle, seasonal states) are folded into
+#'     \code{nParamInternal}, exactly as \code{smooth::adam} does
+#'   \item In-sample fit: \code{fitted, residuals, states} plus
+#'     pts-specific \code{comp*} (additive BC-scale decomposition with
+#'     Error/Fit columns)
+#'   \item Cached forecast: \code{forecast} (original scale, if \code{h > 0})
+#'     and \code{forecast_args*} for cheap re-forecasting
+#'   \item Likelihood + diagnostics: \code{logLik},
+#'     \code{table*} (C++ validation text)
+#'   \item Scalars read by \code{plot.smooth} / diagnostics:
+#'     \code{distribution = "dnorm"}, \code{loss = "likelihood"},
+#'     \code{occurrence = NULL}, \code{holdout}
+#'   \item Bookkeeping: \code{call, timeElapsed}
+#' }
+#' AIC / AICc / BIC / BICc are derived on demand via the methods, not
+#' stored on the object.  (* = pts-specific extension.)
+#'
+#' @seealso \code{\link{forecast.pts}}
+#'
+#' @examples
+#' # Automatic model selection (Power / Trend / Seasonal) on monthly data
+#' model <- pts(AirPassengers, model = "ZZZ", h = 12, holdout = TRUE)
+#' model
+#'
+#' # A fixed specification: no transform, local-linear trend, trigonometric
+#' # seasonality, with a 12-step forecast
+#' fixedModel <- pts(AirPassengers, model = "1LT", h = 12)
+#' forecast(fixedModel, h = 12)
+#'
+#' @template authors
+#' @export
+pts <- function(data,
+                model      = "ZZZ",
+                lags       = stats::frequency(data),
+                orders     = list(ar = 0, ma = 0, select = FALSE),
+                formula    = NULL,
+                regressors = c("use"),
+                outliers   = c("ignore", "use", "select"),
+                level      = 0.99,
+                ic         = c("AICc", "BICc", "BIC", "AIC"),
+                lambda_estim = c("likelihood", "guerrero", "decomp-guerrero"),
+                biasadj    = FALSE,
+                h          = 0,
+                holdout    = FALSE,
+                verbose    = FALSE,
+                ...){
+    cl  <- match.call()
+    tic <- proc.time()
+    regressors <- match.arg(regressors)
+    ic         <- match.arg(ic)
+    lambda_estim <- match.arg(lambda_estim)
+    biasadj    <- isTRUE(biasadj)
+    outliers   <- match.arg(outliers)
+    if (outliers == "select")
+        stop("`outliers = 'select'` is not yet supported; use 'use'.",
+             call. = FALSE)
+    if (!is.numeric(level) || length(level) != 1L ||
+        level <= 0 || level >= 1)
+        stop("`level` must be a length-1 numeric in (0, 1).",
+             call. = FALSE)
+    # Engine takes a z-score threshold (positive -> enable outlier
+    # detection); adam-style `level` converts to a two-sided z via the
+    # standard normal quantile at (1 + level)/2.  At the default 0.99 ->
+    # ~= 2.576 ~= qnorm(0.995, 0, 1).
+    outlier_z <- if (outliers == "ignore") 0
+                 else stats::qnorm((1 + level) / 2)
+    # Internal hatch (adam-style): if the caller passes B via ..., use it
+    # as the starting parameter vector for the optimiser.  Natural-scale
+    # (positive variances), matching the engine's userP0 branch.  Kept
+    # out of the documented signature on purpose.
+    dots <- list(...)
+    B    <- dots$B
+    criterion  <- .pts_ic_to_engine(ic)
+    # `lags` historically is the scalar structural-seasonal period.  As an
+    # adam-style ergonomic, also accept a vector c(1, s, ...) -- the last
+    # entry is taken as the structural period; the full vector becomes the
+    # default ARMA-block lag set when `orders$lags` is not supplied.
+    if (length(lags) > 1L){
+        lagsDefault <- as.integer(lags)
+        lags        <- as.integer(lags[length(lags)])
+    } else {
+        lagsDefault <- c(1L, as.integer(lags))
+    }
+    ordersUC <- .pts_orders_to_uc(orders, lagsDefault = lagsDefault)
+    if (!is.numeric(h) || length(h) != 1 || h < 0)
+        stop("`h` must be a non-negative integer.", call. = FALSE)
+
+    # Split the user-supplied `data` into the response vector y plus an
+    # optional xreg matrix u.  Vector / ts / zoo go through unchanged;
+    # matrix / data.frame either follow `formula` or default to "col 1 is
+    # response, cols 2..k are xregs".
+    parsed <- .pts_parse_data(data, formula = formula)
+    y      <- parsed$y
+    u      <- parsed$u
+
+    # Lower bound on lambda for the engine's joint-BFGS (and the Guerrero
+    # screens).  Enforced inside the C++ joint-lambda optimiser; no R-side
+    # rewrites of the model spec.
+    #   * any(y < 0)  -> 0   : Box-Cox is undefined for negatives.
+    #   * any(y == 0) -> the zero floor log(2)/log(max(y)): below it the zero
+    #     g(0) = -1/lambda becomes a pathological outlier, and at lambda <= 0 it
+    #     is -Inf and silently dropped -- which makes the likelihood (and so the
+    #     AICc used for joint-lambda estimation) incomparable across lambda.
+    #     A flat 1e-10 floor (the old value) did NOT prevent this; the proper
+    #     zero floor does, so likelihood-based lambda selection stays in the
+    #     finite-sample region and finds the true optimum.
+    #   * otherwise -> unbounded.
+    lambdaLower <- if (any(y < 0, na.rm = TRUE)) 0
+                   else if (any(y == 0, na.rm = TRUE)) .pts_lambda_zero_floor(y, 0)
+                   else -Inf
+    # Negative-y safety: Box-Cox throws for any lambda != 1 when y has
+    # negatives, so warn the user and pin the spec to lambda = 1 by
+    # rewriting position 1 of the model string.  An explicit lambda = 1
+    # is left untouched and stays silent.
+    if (any(y < 0, na.rm = TRUE)){
+        nm <- nchar(model)
+        lambdaUser <- suppressWarnings(as.numeric(substr(model, 1L, nm - 2L)))
+        if (is.na(lambdaUser) || lambdaUser != 1){
+            warning("`data` contains negative values; Box-Cox is undefined for ",
+                    "negatives.  Setting lambda = 1 (no transformation).",
+                    call. = FALSE)
+            model <- paste0("1", substr(model, nm - 1L, nm))
+        }
+    }
+
+    held <- NULL
+    u_held <- NULL          # future xreg (held-out rows) for the auto-forecast
+    if (holdout && h > 0){
+        if (length(y) <= h)
+            stop("`holdout = TRUE` requires `length(data) > h`.", call. = FALSE)
+        n <- length(y) - h
+        if (is.ts(y)){
+            held <- stats::window(y, start = stats::time(y)[n + 1L])
+            y    <- stats::window(y, end   = stats::time(y)[n])
+        } else if (inherits(y, "zoo")){
+            held <- y[(n + 1L):length(y)]
+            y    <- y[seq_len(n)]
+        } else {
+            held <- y[(n + 1L):length(y)]
+            y    <- y[seq_len(n)]
+        }
+        if (!is.null(u)){
+            # u is k x N; split column-wise to keep the kxn / kxh shapes.
+            u_held <- u[, (n + 1L):ncol(u), drop = FALSE]
+            u      <- u[, seq_len(n),       drop = FALSE]
+        }
+    }
+
+    # Box-Cox lambda screening: when the user requests auto-lambda ("Z"),
+    # pick lambda by variance stabilisation on a classically-decomposed
+    # version of the series -- a fast, model-free alternative to fitting a
+    # proxy structural model per candidate lambda.
+    #
+    # Procedure (matches the "decomp + Guerrero (ma)" recipe explored in
+    # the lambda-screen comparison; see scripts/guerrero_decomp.R):
+    #
+    #   1. Run smooth::msdecompose(y, lags = m, type = "additive",
+    #      smoother = "ma") with m = structural seasonal period.  This
+    #      fits a centred moving average of order m for the trend and an
+    #      averaged seasonal pattern.
+    #   2. Take the smoothed trend as level: mu_t = states[, 1].
+    #   3. Form non-overlapping blocks of length m (R = floor(n/m) blocks).
+    #      Inside each block i compute:
+    #         mu_b[i] = mean(mu_t in block i)           # block-average level
+    #         sd_b[i] = sd(y - mu_t in block i)         # within-block dispersion,
+    #                                                   # i.e. seasonal swing + noise
+    #      sd_b deliberately retains the seasonal swing -- for multiplicative
+    #      seasonality the swing grows with the level, which is exactly the
+    #      signal Guerrero needs.  Subtracting the additive seasonal
+    #      component would erase that signal.
+    #   4. Minimise the coefficient of variation:
+    #         CV(lambda) = sd_i( sd_b[i] * mu_b[i]^(lambda-1) ) /
+    #                     mean_i( sd_b[i] * mu_b[i]^(lambda-1) )
+    #      via stats::optimize over the *clipped* range [0, 2].  Clipping
+    #      at 0 eliminates the -1/lambda vertical asymptote of the inverse
+    #      BC -- without it, lambda can drift negative on outlier-contaminated
+    #      series and produce Inf forecasts.  Upper 2 is the FPP-standard
+    #      generous cap (inverse BC is sub-linear above 1, never explosive).
+    #
+    # Falls back to lambda = 1 (identity, no transform) when:
+    #   * Series is too short relative to the seasonal period (n < 2m).
+    #   * Any y_t <= 0 (BC undefined; already gated earlier but defensive).
+    #   * m < 2 (no seasonal structure to decompose by).
+    #   * msdecompose fails or every block has sd_b = 0.
+    #
+    # Box-Cox lambda selection (only when the power slot is "Z").  `lambda_estim`
+    # picks the method:
+    #   * "likelihood" (default): leave "Z" in the spec so the engine estimates
+    #     lambda JOINTLY with the structural parameters by maximising the
+    #     concentrated likelihood (its joint-lambda BFGS + anchor snap), bounded
+    #     below by `lambdaLower`.  No R-side screen.
+    #   * "guerrero": the classical Guerrero (1993) variance-stabilisation screen
+    #     on raw season-length blocks.
+    #   * "decomp-guerrero": Guerrero on an msdecompose-smoothed trend (the
+    #     former default).
+    # For the two screens the "Z" slot is rewritten with the chosen numeric
+    # lambda, so the structural ident then runs at fixed lambda.  Either way
+    # lambda costs one DoF (lambdaWasScreened here, or lambdaEstimated from the
+    # engine for the likelihood path).
+    lambdaWasScreened <- FALSE
+    nm <- nchar(model)
+    if (toupper(substr(model, 1L, nm - 2L)) == "Z" &&
+        lambda_estim != "likelihood" && length(y) >= 4){
+        lowerScreen <- max(0, if (is.finite(lambdaLower)) lambdaLower else 0)
+        bestLambda <- if (lambda_estim == "guerrero")
+            .pts_guerrero_classic_lambda(y, lags = lags,
+                                         lambda_lower = lowerScreen,
+                                         lambda_upper = 2)
+        else
+            .pts_guerrero_decomp_lambda(y, lags = lags,
+                                        lambda_lower = lowerScreen,
+                                        lambda_upper = 2)
+        model <- paste0(format(bestLambda, scientific = FALSE,
+                               drop0trailing = TRUE),
+                        substr(model, nm - 1L, nm))
+        lambdaWasScreened <- TRUE
+    }
+
+    # Nested PTS + ARMA selection.  When `orders$select = TRUE`, the loop
+    # is PTS-outer / ARMA-inner: for every structural (trend, seasonal)
+    # candidate, fit it without ARMA, run the ARMA grid on its residuals,
+    # and score combined_IC = structural_IC + (best_ARMA_IC - ARMA(0,0)_IC).
+    # The (PTS structure, ARMA orders) pair with the lowest combined IC
+    # wins; the final fit then runs at fixed structure + fixed ARMA.
+    #
+    # The damped (D / srw) trend is paired only with AR-less ARMA
+    # candidates because srw's alpha parameter and AR persistence are
+    # jointly unidentified -- same rule the engine's findUCmodels() applies.
+    userSelect <- isTRUE(ordersUC$select)
+    if (userSelect){
+        sel <- .pts_select_pts_arma(y = y, u = u,
+                                    model_template = model,
+                                    lags     = lags,
+                                    ar_max   = ordersUC$ar,
+                                    ma_max   = ordersUC$ma,
+                                    arma_lags = ordersUC$lags,
+                                    ic        = ic,
+                                    criterion = criterion,
+                                    verbose   = verbose,
+                                    lambdaLower = lambdaLower)
+        # Lock the structural spec down (lambda + trend + seasonal letters)
+        # so the final fit doesn't re-ident.
+        model <- sel$model_spec
+        ordersUC$ar     <- sel$ar
+        ordersUC$ma     <- sel$ma
+        ordersUC$lags   <- sel$lags
+        ordersUC$select <- FALSE
+    }
+
+    # The engine's outlier-injection path has a parameter-vector
+    # dimensionality bug when joint-BFGS is also estimating lambda (the
+    # extra lambda slot doesn't survive the dummy-injection refit).
+    # Sidestep by pinning lambda *before* outlier detection: when
+    # `outliers = "use"` and the model spec still has the auto-lambda
+    # `Z` letter, run a quick no-outlier fit, read its chosen lambda
+    # back, and rewrite the model spec with that lambda as a number.
+    if (outliers == "use" && outlier_z > 0){
+        nmod <- nchar(model)
+        if (toupper(substr(model, 1L, nmod - 2L)) == "Z"){
+            pre <- .pts_fit(y = y, u = u, model = model, lags = lags,
+                            h = 0L,
+                            criterion = criterion,
+                            armaIdent = FALSE,
+                            ar = ordersUC$ar, ma = ordersUC$ma,
+                            armaLags = ordersUC$lags,
+                            outlier = 0,
+                            B = NULL, verbose = FALSE)
+            lambda_chosen <- round(as.numeric(pre$lambda), 4)
+            model <- paste0(format(lambda_chosen, scientific = FALSE),
+                            substr(model, nmod - 1L, nmod))
+        }
+    }
+
+    res <- .pts_fit(y = y, u = u, model = model, lags = lags,
+                    h = as.integer(h),
+                    criterion = criterion,
+                    armaIdent = ordersUC$select,
+                    ar        = ordersUC$ar,
+                    ma        = ordersUC$ma,
+                    armaLags  = ordersUC$lags,
+                    outlier   = outlier_z,
+                    lambdaLower = lambdaLower,
+                    B         = B,
+                    uFuture   = u_held,   # future xreg for the auto-forecast
+                    biasadj   = biasadj,
+                    verbose   = verbose)
+    # When h > 0 we cache the engine's forecast (length h, original scale).
+    # When h == 0 we still populate $forecast with a 1-period NA placeholder
+    # anchored at the next observation, mirroring adam.R:572:
+    #   ts(NA, start = yIndex[obsInSample] + diff(yIndex[1:2]),
+    #      frequency = yFrequency)
+    cachedFor <- if (h > 0) res$yFor else .pts_wrap_oos(NA_real_, y)
+
+    # Structural state evolution: build the (nobs + 1) x nStates matrix
+    # (row 1 = initial state at t = 0, rows 2..n+1 = smoothed states), then
+    # let .pts_wrap_states attach the right ts/zoo time class with the
+    # leading row anchored at start(data) - one period (adam convention).
+    statesMat <- NULL
+    if (is.matrix(res$comp) && ncol(res$comp) >= 3){
+        ns   <- length(y)
+        cols <- setdiff(colnames(res$comp), c("Error", "Fit"))
+        raw  <- res$comp[, cols, drop = FALSE]
+        if (nrow(raw) > ns) raw <- raw[seq_len(ns), , drop = FALSE]
+        statesMat <- rbind(NA_real_, unclass(raw))
+        colnames(statesMat) <- colnames(raw)
+        statesMat <- .pts_wrap_states(statesMat, y)
+    }
+
+    # ARMA orders from the UC string (derived once so $orders is consistent
+    # with what the orders.pts accessor returns).  We carry the user's
+    # `select` flag through so a model fitted with orders$select = TRUE
+    # reports that in its $orders slot too.  `pq` carries per-lag vectors so
+    # SARMA specs round-trip cleanly.
+    pq <- uc_to_arma(res$modelUC)
+    ordersList <- list(ar     = as.integer(pq$ar),
+                       ma     = as.integer(pq$ma),
+                       lags   = as.integer(pq$lags),
+                       # Preserve the user's original select flag so a fit
+                       # done via the residual-based grid search still
+                       # reports `$orders$select = TRUE`.
+                       select = userSelect)
+
+    # Flat AR / MA coefficient vectors (smooth::adam convention -- `$arma`).
+    # Lag-by-lag concatenation: c(phi_1, ..., phi_p [, Phi_1, ..., Phi_P]) for AR
+    # and analogously for MA.  Empty when the fit has no ARMA structure.
+    Bnames  <- names(res$p)
+    armaList <- list(
+        ar = unname(res$p[grepl("^S?AR\\(", Bnames)]),
+        ma = unname(res$p[grepl("^S?MA\\(", Bnames)])
+    )
+
+    out <- list(
+        ## --- inputs / spec ---
+        # data: same wrapping convention as adam (.pts_wrap_in handles the
+        # yClasses promotion + ts/zoo branch at adam.R:4489-4499).
+        data       = .pts_wrap_in(y, y),
+        u            = u,                # NULL when there are no regressors
+        formula      = parsed$formula,
+        responseName = parsed$responseName,
+        regressors   = regressors,       # adam-aligned: "use" only for now
+        outliers     = outliers,         # adam-aligned: "ignore" or "use"
+        level        = level,            # confidence level for outlier z-threshold
+        outliersDetected = res$outliersDetected,
+        ic           = ic,               # adam-style criterion name (AICc/...)
+        model      = uc_to_pts(res$modelUC, res$lambda),
+        modelUC    = res$modelUC,       # pts-specific UC string
+        lags       = lags,
+        lagsAll    = res$lagsAll,       # internal harmonic periods (C++ engine)
+        lambda     = res$lambda,        # pts-specific Box-Cox parameter
+        ## --- parameters ---
+        B          = res$p,
+        # Terminal-state cache: forecast()/predict() reuse it to skip the
+        # full-series re-filter (decoupled fit/forecast).  betaAug carries the
+        # augmented-KF state (xreg coefs + initial states) so xreg models
+        # forecast from the cache too.
+        aEnd       = res$aEnd,
+        PEnd       = res$PEnd,
+        innVar     = res$innVar,
+        betaAug    = res$betaAug,
+        vcov       = res$covp,          # parameter covariance, computed by the
+                                        # C++ "all" command at no extra cost
+        # nParam: an adam-style breakdown table (mirrors smooth::adam's
+        # `$nParam`).  A 2 x 5 matrix, rows c("Estimated", "Provided"),
+        # columns c("nParamInternal", "nParamXreg", "nParamOccurrence",
+        # "nParamScale", "nParamAll").  nparam() / logLik() / the ICs read the
+        # [Estimated, nParamAll] cell, so the total degrees of freedom is
+        # unchanged from a scalar count -- only the presentation is richer.
+        #
+        # Column mapping for PTS:
+        #   nParamInternal -- structural parameters: the relative variances
+        #     (all variances except the one concentrated scale), ARMA coefs,
+        #     trend damping, the Box-Cox lambda when free, AND the estimated
+        #     diffuse initials (level/slope + cycle + seasonal states).  As in
+        #     adam, the initials are folded in here, not split out.  The
+        #     initial count res$nInitial = ns(0)+ns(1)+ns(2) is engine-computed
+        #     (lags-driven, correct for multi-seasonal lags; stationary ARMA
+        #     states excluded) and already includes the G/td drift (= initial
+        #     slope), so no separate "^td/" correction is needed.
+        #   nParamXreg     -- regressor coefficients (one per xreg row).
+        #   nParamOccurrence -- always 0 (PTS has no intermittent/occurrence
+        #     model).
+        #   nParamScale    -- 1: the concentrated innovation variance (the
+        #     scale of the dbcnorm likelihood; loss is always "likelihood").
+        #
+        # lambda DoF: counted when the engine estimated it (joint-BFGS,
+        # lambdaEstimated) OR when the R-side Brent screen replaced "Z" with a
+        # numeric value before the structural ident (lambdaWasScreened).  Folds
+        # into nParamInternal.  Matches greybox::alm for distribution =
+        # "dbcnorm".  The engine adds the same quantities to its own selection
+        # k (kFor in BSMclass::estim), so selection and reporting agree.
+        nParam     = .pts_nparam_table(
+                         nP        = length(res$p),
+                         nInitial  = res$nInitial,
+                         lambdaDoF = as.integer(isTRUE(res$lambdaEstimated) ||
+                                                lambdaWasScreened),
+                         nXreg     = if (is.null(u)) 0L else nrow(u)),
+        ## --- in-sample ---
+        fitted     = res$fitted,        # original scale (back-transformed)
+        residuals  = res$residuals,     # BC scale (engine innovations)
+        comp       = res$comp,          # pts-specific BC-scale additive decomposition
+        states     = statesMat,         # adam-aligned structural state evolution
+        ## --- forecast convenience cache (NULL when pts is called with h = 0) ---
+        forecast     = cachedFor,
+        biasadj      = biasadj,          # point forecast: mean (TRUE) vs median
+        lambda_estim = lambda_estim,     # how lambda was chosen
+        ## --- likelihood + diagnostics ---
+        logLik       = res$logLik,
+        lossValue    = -as.numeric(res$logLik),  # adam: CFValue
+        scale        = res$scale,                # MLE scale of dnorm
+        cppOutput    = res$table,                # raw C++ validation text block
+        ## --- smooth/adam-aligned scalars for plot.smooth dispatch ---
+        distribution = "dnorm",
+        loss         = "likelihood",
+        lossFunction = NULL,
+        occurrence   = NULL,                     # is.occurrence(NULL) == FALSE
+        holdout      = NULL,                     # overwritten below if holdout = TRUE
+        ## --- adam-aligned slots that PTS has no analog for; values
+        ## mirror what adam stores when the corresponding feature is
+        ## absent (smooth/R/adam.R:578-612).  NA for atomic; NULL for
+        ## list-typed.  Keeping them in the return list keeps `names(m)`
+        ## in line with adam so downstream tooling can introspect by name. ---
+        persistence      = NA_real_,
+        phi              = NA_real_,
+        transition       = NA,
+        measurement      = NA,
+        initial          = NA,
+        initialType      = NA_character_,
+        initialEstimated = NA,
+        orders           = ordersList,
+        arma             = armaList,
+        constant         = NA_real_,
+        other            = NULL,
+        ets              = NA,
+        res              = NA,
+        FI               = NA,
+        adamCpp          = NA,
+        profile          = NULL,
+        profileInitial   = NULL,
+        ## --- bookkeeping ---
+        call         = cl,
+        timeElapsed  = proc.time() - tic
+    )
+    if (!is.null(held)) out$holdout <- held
+    class(out) <- c("pts", "smooth")
+    out
+}
