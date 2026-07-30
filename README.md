@@ -6,15 +6,22 @@
 
 <!-- badges: start -->
 
-[![R-CMD-check](https://github.com/config-i1/muse/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/config-i1/muse/actions/workflows/R-CMD-check.yaml)
+## R
+
+[![R-CMD-check](https://github.com/openforecast-org/muse/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/openforecast-org/muse/actions/workflows/R-CMD-check.yaml)
 [![CRAN_Status_Badge](http://www.r-pkg.org/badges/version/muse)](https://cran.r-project.org/package=muse)
 [![Downloads](http://cranlogs.r-pkg.org/badges/muse)](https://cran.r-project.org/package=muse)
 <!-- badges: end -->
 
+## Python
+
+[![Python versions](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![Python CI](https://github.com/openforecast-org/muse/actions/workflows/python-check.yaml/badge.svg)](https://github.com/openforecast-org/muse/actions/workflows/python-check.yaml)
+
 **muse** is an R package implementing the **PTS** (*Power / Trend / Seasonal*) state-space family of models for time-series analysis and for forecasting. The estimation engine is written in C++ (Rcpp & RcppArmadillo), wrapping a Kalman filter/smoother around a Multiple Source of Error (MSOE) model whose components are selected analogously to the
 ETS taxonomy.
 
-The package shares conventions with [`smooth`](https://github.com/config-i1/smooth) and [`greybox`](https://github.com/config-i1/greybox): the returned object inherits from `c("pts", "smooth")` so generics such as `forecast()`, `accuracy()`, `plot()`, `AIC()`, and `BIC()` work out of the box.
+The package shares conventions with [`smooth`](https://github.com/openforecast-org/smooth) and [`greybox`](https://github.com/openforecast-org/greybox): the returned object inherits from `c("pts", "smooth")` so generics such as `forecast()`, `accuracy()`, `plot()`, `AIC()`, and `BIC()` work out of the box.
 
 ## Installation
 
@@ -22,7 +29,7 @@ The package is not yet on CRAN.  Install the development version directly from G
 
 ```r
 # install.packages("remotes")
-remotes::install_github("config-i1/muse")
+remotes::install_github("openforecast-org/muse")
 ```
 
 Once released on CRAN:
@@ -73,7 +80,7 @@ model_out$outliersDetected
 ## Reporting issues
 
 Bug reports and feature requests are welcome at the
-[issue tracker](https://github.com/config-i1/muse/issues).
+[issue tracker](https://github.com/openforecast-org/muse/issues).
 
 ## Acknowledgements
 
