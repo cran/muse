@@ -1,15 +1,15 @@
 Package: muse
 Type: Package
 Title: Multiple Unobserved Sources of Error State Space Models
-Version: 0.1.1
-Date: 2026-07-27
+Version: 0.1.2
+Date: 2026-09-15
 Authors@R: c(person("Diego J.", "Pedregal", role = c("aut", "ctb"),
                      email = "Diego.Pedregal@uclm.es",
                      comment = c(ORCID = "0000-0003-4958-0969")),
            person("Ivan", "Svetunkov", email = "ivan@svetunkov.com", role = c("aut", "cre"),
-                  comment = c("Senior Lecturer at Centre for Marketing Analytics and Forecasting, Lancaster University, UK",
+                  comment = c("Director of the OpenForecast consultancy company, UK",
                               ORCID = "0000-0001-7826-0281")))
-URL: https://github.com/openforecast-org/muse
+URL: https://openforecast.org/packages/
 BugReports: https://github.com/openforecast-org/muse/issues
 Language: en-GB
 Description: Implements the Power / Trend / Seasonal (PTS) model, a unified
@@ -35,12 +35,11 @@ ByteCompile: true
 Config/roxygen2/version: 8.0.0
 RoxygenNote: 8.0.0
 NeedsCompilation: yes
-Packaged: 2026-07-30 12:35:19 UTC; config
+Packaged: 2026-09-16 09:39:05 UTC; config
 Author: Diego J. Pedregal [aut, ctb] (ORCID:
     <https://orcid.org/0000-0003-4958-0969>),
-  Ivan Svetunkov [aut, cre] (Senior Lecturer at Centre for Marketing
-    Analytics and Forecasting, Lancaster University, UK, ORCID:
-    <https://orcid.org/0000-0001-7826-0281>)
+  Ivan Svetunkov [aut, cre] (Director of the OpenForecast consultancy
+    company, UK, ORCID: <https://orcid.org/0000-0001-7826-0281>)
 Maintainer: Ivan Svetunkov <ivan@svetunkov.com>
 Repository: CRAN
-Date/Publication: 2026-07-30 23:20:02 UTC
+Date/Publication: 2026-09-16 10:00:02 UTC

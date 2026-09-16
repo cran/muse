@@ -1,6 +1,6 @@
-fd90f371ef91ff7ed928f09a4cbf4ac7 *DESCRIPTION
+4ae855295eae1962275fd3c509b8cca6 *DESCRIPTION
 c2b41a3216716ce0e076f808348604ef *NAMESPACE
-0948959390b376ad537074b934f4a38a *NEWS
+0da232c9de1bdc91266c5a88a0f4a306 *NEWS
 3746d872bc605cb324a34aedd0ac12e2 *R/RcppExports.R
 9ee80d6b6f926b52ca937ef4e6f5be65 *R/methods.R
 29cb058dd332f6379ec339d852f45f0e *R/muse-package.R
@@ -16,13 +16,13 @@ e8218d31498a8d410ca457d5ff926637 *R/pts-translate.R
 de5b5a388d8608afdd650e7dab1b048e *R/pts-update.R
 eb8ccfff18eaf1102c0c6878c716239a *R/pts.R
 9aa91f4357721c99338a4e3f10c44639 *R/zzz.R
-bcfb8deeb04334e390e6bfda45a21cc4 *README.md
+b36df943e30ed5f6248381bb1de729ae *README.md
 21c9401b8c07f38d762ade4612fc4ffe *build/partial.rdb
 d27f8735ac79bed27dedd63353ca1344 *build/vignette.rds
 d4689ffab39fdae9038d21beba6aae9f *inst/doc/pts.R
 be6b9ed0c0bb4ac5cdc65e3d15d6e46f *inst/doc/pts.Rmd
-7ea7b88776c0626f4cc615104762cace *inst/doc/pts.html
-e7c8e9869e1104e46d2b0d390068751d *man/figures/muse-purple-light-web.png
+2afeedf79ccebd8eb0163eed9157f173 *inst/doc/pts.html
+7facdff19fd3eea74a947a6cb9be68d5 *man/figures/muse-purple-light-web.png
 d81d7ccac7e18412f692b84384b9ddb5 *man/initials.Rd
 6fd1322eeba339e4f715ff39fc4b3916 *man/muse.Rd
 337df6dcb423a61d55bcb2491834f34e *man/pts-methods.Rd
@@ -44,6 +44,6 @@ d1718b91dacde293d2a912ba14327d2e *src/optim.h
 7b9914d94513da2fae1495d6aef94571 *src/stats.h
 f8673acd2b8f4aaf23090f3fb8d115d8 *tests/testthat.R
 fa818eae9c89523ed526a96e0c15aaff *tests/testthat/test_pts.R
-7500845e661b5a636a95fc630a95b6dd *tests/testthat/test_pts_methods.R
+647950bb2f07d4dacd3e5fb2354b4ad1 *tests/testthat/test_pts_methods.R
 640e4a8dc9be6b26b081092754721b5e *tests/testthat/test_stress.R
 be6b9ed0c0bb4ac5cdc65e3d15d6e46f *vignettes/pts.Rmd
